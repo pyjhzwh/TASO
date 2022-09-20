@@ -133,7 +133,8 @@ enum OpType {
   OP_FUSE_CONV_BATCHNORM,
   OP_FUSE_CONV_BATCHNORM_ALPHA_VAR,
   OP_FUSE_CONV_BATCHNORM_BIAS,
-  OP_BROADCAST_ADD
+  OP_BROADCAST_ADD,
+  OP_TRANSFORM,
 };
 
 struct Op {
@@ -402,6 +403,8 @@ enum PMParameter {
   PM_AXES,		// Squeeze, Unsqueeze, Reduce*
   PM_KEEP_DIMS,         // Reduce*
   PM_EPSILON,   // BatchNorm
+  PM_SRCLAYOUT,		// Transpose
+  PM_DSTLAYOUT,		// Transpose
 };
 
 enum TNParameter {
@@ -450,6 +453,11 @@ enum PaddingMode {
 //  CN_MODE_ONES_SCALED_L2,
 //  CN_MODE_ONES_SCALED_ALL,
 //};
+
+enum Layout {
+  LAYOUT_NCHW,
+  LAYOUT_NHWC,
+};
 
 class OpBase {
 public:
@@ -628,6 +636,9 @@ public:
   TensorHandle transpose(const TensorHandle _input,
                          const std::vector<int>& _perm,
                          bool _shuffle = false);
+  TensorHandle transform(const TensorHandle _input,
+                          const Layout _src_layout,
+                          const Layout _dst_layout);
   TensorHandle tanh(const TensorHandle _input,
                     bool _inPlace = true);
   void topk(const TensorHandle _input,
@@ -679,6 +690,8 @@ public:
     std::vector<Op> srcOps, dstOps;
   };
   std::vector<GraphSubst> subst_history;
+private:
+  cudnnTensorFormat_t getCuDNNLayout(Layout layout);
 };
 
 class Constant : public OpBase {
@@ -1113,6 +1126,32 @@ public:
   bool shuffle;
 };
 
+// Layout transform
+class Transform : public OpBase {
+public:
+  Transform(Model* _model, Tensor _input,
+           cudnnTensorFormat_t _src_layout,
+           cudnnTensorFormat_t _dst_layout);
+  ~Transform(void);
+  bool get_int_parameter(PMParameter para, int*);
+  void forward(bool block);
+  void map(void);
+  void unmap(void);
+  void collect_costs(float& exe_time, float& flops, float& mem_acc, int& num_kernels);
+public:
+#ifdef USE_CUDNN
+  cudnnTensorDescriptor_t srcTensor;
+  cudnnTensorDescriptor_t dstTensor;
+  cudnnTensorFormat_t src_layout;
+  cudnnTensorFormat_t dst_layout;
+#endif
+  bool needTransform;
+  int N;
+  int C;
+  int H;
+  int W;
+};
+
 class Unsqueeze : public OpBase {
 public:
   Unsqueeze(Model* _model, const Tensor& input, const std::vector<int>& axes);
@@ -1333,6 +1372,12 @@ struct TransposeKey {
   int keys[KEY_LENGTH];
 };
 
+struct TransformKey {
+  static const int KEY_LENGTH = Tensor::MAX_KEY_LENGTH + 2;
+  TransformKey(Tensor, cudnnTensorFormat_t, cudnnTensorFormat_t);
+  int keys[KEY_LENGTH];
+};
+
 struct UnsqueezeKey {
   static const int KEY_LENGTH = Tensor::MAX_KEY_LENGTH + MAX_DIM;
   UnsqueezeKey(const Tensor& input, const std::vector<int>& axes);
@@ -1414,6 +1459,8 @@ public:
                              bool _shuffle);
   Op get_or_create_transpose(Tensor _input, int permIdx,
                              bool _shuffle);
+  Op get_or_create_transform(Tensor _input, cudnnTensorFormat_t _src_layout,
+                             cudnnTensorFormat_t _dst_layout);
   Op get_or_create_noop(Tensor _input, OpType _type);
   Op get_or_create_merge_gconv(const Tensor& _weight,
                                int count);
@@ -1429,6 +1476,7 @@ public:
   void measure_pool2d_cost(Pool2D*);
   void measure_topk_cost(TopK*);
   void measure_transpose_cost(Transpose*);
+  void measure_transform_cost(Transform*);
   void measure_reduce_cost(Reduce*);
   void measure_reshape_cost(Reshape*);
   void measure_resize_cost(Resize*);
@@ -1504,6 +1552,7 @@ public:
   std::map<SqueezeKey, Squeeze*, KeyCompare<SqueezeKey> > squeeze;
   std::map<TopKKey, TopK*, KeyCompare<TopKKey> > topk;
   std::map<TransposeKey, Transpose*, KeyCompare<TransposeKey> > transpose;
+  std::map<TransformKey, Transform*, KeyCompare<TransformKey> > transform;
   std::map<UnsqueezeKey, Unsqueeze*, KeyCompare<UnsqueezeKey> > unsqueeze;
   std::map<WhereKey, Where*, KeyCompare<WhereKey> > where;
   DATATYPE *inputPtr, *biasPtr, *outputPtr, *filterPtr;

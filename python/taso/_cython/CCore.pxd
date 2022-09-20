@@ -138,6 +138,11 @@ cdef extern from "taso/ops.h" namespace "taso":
         CN_MODE_ONES_SCALED_L2
         CN_MODE_ONES_SCALED_ALL
 
+    # This must be consistent with include/taso/ops.h
+    cdef enum Layout:
+        LAYOUT_NCHW
+        LAYOUT_NHWC
+
     cdef cppclass Model:
         Model()
 
@@ -255,6 +260,9 @@ cdef extern from "taso/ops.h" namespace "taso":
         TensorHandle transpose(const TensorHandle input,
                                const vector[int] perm,
                                bool shuffle)
+        TensorHandle transform(const TensorHandle _input,
+                          const Layout _src_layout,
+                          const Layout _dst_layout);
         TensorHandle unsqueeze(const TensorHandle input,
                                const vector[int] axes)
         TensorHandle new_input(int ndim, const int* dims)

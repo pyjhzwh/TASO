@@ -49,6 +49,14 @@ def get_data_type(datatype):
     elif datatype == "BOOL":
         return DT_BOOL
 
+def get_layout(layout):
+    if layout == "NCHW":
+        return LAYOUT_NCHW
+    elif layout == "NHWC":
+        return LAYOUT_NHWC
+    else:
+        assert(False)
+
 def get_activation_mode(activation):
     if (activation == "NONE"):
         return AC_MODE_NONE
@@ -498,6 +506,14 @@ cdef class PyGraph:
         for i in range(len(perm)):
             cperm[i] = perm[i]
         cdef TensorHandle handle = self.p_graph.transpose(input.ctensor, cperm, shuffle)
+        t = ctypes.cast(<unsigned long long>handle, ctypes.c_void_p)
+        return PyTensor(t)
+
+    def transform(self, PyTensor input, str src_layout, str dst_layout):
+        assert (type(input) == PyTensor)
+        cudnn_src_layout = get_layout(src_layout)
+        cudnn_dst_layout = get_layout(dst_layout)
+        cdef TensorHandle handle = self.p_graph.transform(input.ctensor, cudnn_src_layout, cudnn_dst_layout)
         t = ctypes.cast(<unsigned long long>handle, ctypes.c_void_p)
         return PyTensor(t)
 
