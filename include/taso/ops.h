@@ -135,6 +135,12 @@ enum OpType {
   OP_FUSE_CONV_BATCHNORM_BIAS,
   OP_BROADCAST_ADD,
   OP_TRANSFORM,
+  OP_TRANSFORM_CONV2D,
+};
+
+enum Layout {
+  LAYOUT_NCHW,
+  LAYOUT_NHWC,
 };
 
 struct Op {
@@ -281,11 +287,12 @@ struct Tensor {
   static const int MAX_KEY_LENGTH = (MAX_NUM_SPLITS + 2) * MAX_DIM + 2;
   static const int MAGIC_NUMBER = 23333;
   Tensor(void)
-  : numDim(0), idx(0), op(), data_ptr(NULL) {
+  : numDim(0), idx(0), op(), data_ptr(NULL), layout(LAYOUT_NCHW) {
     for (int i = 0; i < MAX_DIM; i++)
       split[i].num = 0;
   }
-  Tensor(int ndim, const int* dims, size_t guid, DATATYPE* data = NULL)
+  Tensor(int ndim, const int* dims, size_t guid, DATATYPE* data = NULL,
+    Layout layout = LAYOUT_NCHW)
   : numDim(ndim), idx(0), op(guid, NULL), data_ptr(data) {
     assert(guid != GUID_INVALID);
     assert(ndim <= MAX_DIM);
@@ -295,6 +302,16 @@ struct Tensor {
       stride[i] = count;
       count *= dim[i];
       split[i]  = SplitInfo::NO_SPLIT;
+    }
+    if (layout == LAYOUT_NHWC) {
+      assert(numDim == 4);
+      int count = 1;
+      // desencding order of strides for each dim
+      int layout_dim_order[4] = {0, 2, 3, 1};
+      for (int i = ndim-1; i >= 0; i--) {
+        stride[layout_dim_order[i]] = count;
+        count *= dim[layout_dim_order[i]];
+      }
     }
   }
   Tensor& operator=(const Tensor& src) {
@@ -360,6 +377,20 @@ struct Tensor {
     return true;
   }
 
+  bool is_NHWC_layout(void) const
+  {
+    if(numDim != 4) return false;
+    int cnt = 1;
+    // default is NHWC;
+    // from NCHW(0123) to NHWC(0231), dim match
+    int NCHW_dim[4] = {0, 2, 3, 1};
+    for (int i = numDim-1; i >= 0; i--) {
+      if (stride[NCHW_dim[i]] != cnt) return false;
+      cnt *= dim[NCHW_dim[i]];
+    }
+    return true;
+  }
+
   //bool operator==(const Tensor& b);
   int numDim, dim[MAX_DIM], stride[MAX_DIM];
   int idx; // idx is used for Ops with multiple outputs (e.g., split)
@@ -367,6 +398,7 @@ struct Tensor {
   void* data_ptr;
   // Meta data for splits
   SplitInfo split[MAX_DIM];
+  Layout layout;
 };
 
 //typedef shared_ptr<Tensor> TensorHandle;
@@ -453,11 +485,6 @@ enum PaddingMode {
 //  CN_MODE_ONES_SCALED_L2,
 //  CN_MODE_ONES_SCALED_ALL,
 //};
-
-enum Layout {
-  LAYOUT_NCHW,
-  LAYOUT_NHWC,
-};
 
 class OpBase {
 public:
@@ -639,6 +666,19 @@ public:
   TensorHandle transform(const TensorHandle _input,
                           const Layout _src_layout,
                           const Layout _dst_layout);
+  TensorHandle transform_conv2d(const TensorHandle _input,
+                                int _outputC,
+                                int _kernelH, int _kernelW,
+                                int _strideH, int _strideW,
+                                PaddingMode _padding,
+                                ActiMode _activation = AC_MODE_NONE,
+                                Layout _dst_layout = LAYOUT_NCHW);
+  TensorHandle transform_conv2d(const TensorHandle _input,
+                                const TensorHandle _weight,
+                                int _strideH, int _strideW,
+                                PaddingMode _padding,
+                                ActiMode _activation = AC_MODE_NONE,
+                                Layout _dst_layout = LAYOUT_NCHW);
   TensorHandle tanh(const TensorHandle _input,
                     bool _inPlace = true);
   void topk(const TensorHandle _input,
@@ -733,6 +773,29 @@ public:
   PaddingMode padding;
   ActiMode activation;
   void *biasPtr;
+};
+
+class TransformConv2D: public Conv2D {
+public:
+  TransformConv2D(Model* _model, Tensor _input, Tensor _weight,
+         int _strideH, int _strideW,
+         PaddingMode _padding,
+         ActiMode _activation,
+         cudnnTensorFormat_t _src_layout,
+         cudnnTensorFormat_t _dst_layout);
+  ~TransformConv2D(void);
+  void forward(bool block);
+  void map(void);
+  void unmap(void);
+  bool get_int_parameter(PMParameter para, int*);
+  void collect_costs(float& exe_time, float& flops, float& mem_acc, int& num_kernels);
+public:
+#ifdef USE_CUDNN
+  cudnnTensorFormat_t src_layout;
+  cudnnTensorFormat_t dst_layout;
+  cudnnTensorDescriptor_t inputTransformedTensor;
+#endif
+  bool needTransform;
 };
 
 class Matmul : public OpBase {
@@ -1378,6 +1441,14 @@ struct TransformKey {
   int keys[KEY_LENGTH];
 };
 
+struct TransformConv2DKey {
+  static const int KEY_LENGTH = Tensor::MAX_KEY_LENGTH*2 + 6;
+  TransformConv2DKey(Tensor, Tensor, int, int,
+                      PaddingMode, ActiMode,
+                      cudnnTensorFormat_t, cudnnTensorFormat_t);
+  int keys[KEY_LENGTH];
+};
+
 struct UnsqueezeKey {
   static const int KEY_LENGTH = Tensor::MAX_KEY_LENGTH + MAX_DIM;
   UnsqueezeKey(const Tensor& input, const std::vector<int>& axes);
@@ -1461,6 +1532,12 @@ public:
                              bool _shuffle);
   Op get_or_create_transform(Tensor _input, cudnnTensorFormat_t _src_layout,
                              cudnnTensorFormat_t _dst_layout);
+  Op get_or_create_transform_conv2d(Tensor _input, Tensor _weight,
+                                    int _strideH, int _strideW,
+                                    PaddingMode _padding,
+                                    ActiMode _activation,
+                                    cudnnTensorFormat_t _src_layout,
+                                    cudnnTensorFormat_t _dst_layout);
   Op get_or_create_noop(Tensor _input, OpType _type);
   Op get_or_create_merge_gconv(const Tensor& _weight,
                                int count);
@@ -1477,6 +1554,7 @@ public:
   void measure_topk_cost(TopK*);
   void measure_transpose_cost(Transpose*);
   void measure_transform_cost(Transform*);
+  void measure_transform_conv2d_cost(TransformConv2D*);
   void measure_reduce_cost(Reduce*);
   void measure_reshape_cost(Reshape*);
   void measure_resize_cost(Resize*);
@@ -1508,6 +1586,7 @@ public:
   cublasHandle_t blas;
   cudnnTensorDescriptor_t inputTensor, biasTensor, outputTensor;
   cudnnFilterDescriptor_t filterDesc;
+  cudnnTensorDescriptor_t inputTransformedTensor;
   // Note that actiDesc is set when we construct Model since
   // all relus are identical.
   cudnnActivationDescriptor_t actiDesc;
@@ -1553,9 +1632,10 @@ public:
   std::map<TopKKey, TopK*, KeyCompare<TopKKey> > topk;
   std::map<TransposeKey, Transpose*, KeyCompare<TransposeKey> > transpose;
   std::map<TransformKey, Transform*, KeyCompare<TransformKey> > transform;
+  std::map<TransformConv2DKey, TransformConv2D*, KeyCompare<TransformConv2DKey> > transform_conv2d;
   std::map<UnsqueezeKey, Unsqueeze*, KeyCompare<UnsqueezeKey> > unsqueeze;
   std::map<WhereKey, Where*, KeyCompare<WhereKey> > where;
-  DATATYPE *inputPtr, *biasPtr, *outputPtr, *filterPtr;
+  DATATYPE *inputPtr, *biasPtr, *outputPtr, *filterPtr, *inputTransformedPtr;
   // variables for batch norm
   DATATYPE *scalePtr, *runningMean, *runningVar, *saveMean, *saveVar;
 };
