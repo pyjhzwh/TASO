@@ -1,0 +1,7 @@
+build/
+*.swp
+python/dist
+python/taso.egg-info/
+**/__pycache__/
+**/_cython/
+.vscode/*

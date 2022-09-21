@@ -24,6 +24,9 @@ cudnnTensorFormat_t Graph::getCuDNNLayout(Layout layout)
     return CUDNN_TENSOR_NCHW;
   else if (layout == LAYOUT_NHWC)
     return CUDNN_TENSOR_NHWC;
+  else {
+    assert(false);
+  }
 }
 
 
@@ -62,6 +65,20 @@ Transform::Transform(Model* _model, Tensor _input,
     outputs[0].split[i] = _input.split[i];
   }
   outputs[0].idx = 0;
+  if (src_layout == CUDNN_TENSOR_NCHW)
+  {
+    N = inputs[0].dim[0];
+    C = inputs[0].dim[1];
+    H = inputs[0].dim[2];
+    W = inputs[0].dim[3];
+  }
+  else if (src_layout == CUDNN_TENSOR_NHWC)
+  {
+    N = inputs[0].dim[0];
+    H = inputs[0].dim[1];
+    W = inputs[0].dim[2];
+    C = inputs[0].dim[3];
+  }
 }
 
 Transform::~Transform(void)

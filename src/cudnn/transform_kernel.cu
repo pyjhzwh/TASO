@@ -11,20 +11,6 @@ void Transform::map(void)
   checkCUDNN(cudnnCreateTensorDescriptor(&srcTensor));
   checkCUDNN(cudnnCreateTensorDescriptor(&dstTensor));
 
-  if (src_layout == CUDNN_TENSOR_NCHW)
-  {
-    N = inputs[0].dim[0];
-    C = inputs[0].dim[1];
-    H = inputs[0].dim[2];
-    W = inputs[0].dim[3];
-  }
-  else if (src_layout == CUDNN_TENSOR_NHWC)
-  {
-    N = inputs[0].dim[0];
-    H = inputs[0].dim[1];
-    W = inputs[0].dim[2];
-    C = inputs[0].dim[3];
-  }
   // set descriptors
   checkCUDNN(cudnnSetTensor4dDescriptor(srcTensor, src_layout,
     CUDNN_DATA_FLOAT, N, C, H, W));
@@ -61,10 +47,22 @@ void Model::measure_transform_cost(Transform* transform)
   const float alpha = 1.0f;
   const float beta = 0.0f;
 
+  if (!transform->needTransform)
+  {
+    transform->runtime = 0;
+    if (print_cost)
+      printf("  measure[Transform]: s(%d %d %d %d) layout(%d -> %d) cost(%.4lf)\n",
+        transform->N, transform->C, transform->H, transform->W,
+        transform->src_layout, transform->dst_layout, transform->runtime
+      );
+    return;
+  }
+  
+
   // set descriptors
-  checkCUDNN(cudnnSetTensor4dDescriptor(transform->srcTensor, transform->src_layout,
+  checkCUDNN(cudnnSetTensor4dDescriptor(inputTensor, transform->src_layout,
     CUDNN_DATA_FLOAT, transform->N, transform->C, transform->H, transform->W));
-  checkCUDNN(cudnnSetTensor4dDescriptor(transform->dstTensor, transform->dst_layout,
+  checkCUDNN(cudnnSetTensor4dDescriptor(outputTensor, transform->dst_layout,
     CUDNN_DATA_FLOAT, transform->N, transform->C, transform->H, transform->W));
 
   
@@ -76,8 +74,8 @@ void Model::measure_transform_cost(Transform* transform)
     }
 
     checkCUDNN(cudnnTransformTensor(
-      dnn, &alpha, transform->srcTensor, transform->inputs[0].data_ptr,
-      &beta, transform->dstTensor, transform->outputs[0].data_ptr));
+      dnn, &alpha, inputTensor, inputPtr,
+      &beta, outputTensor, outputPtr));
   }
   checkCUDA(cudaEventRecord(endEvent));
   checkCUDA(cudaEventSynchronize(endEvent));
